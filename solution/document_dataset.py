@@ -1,23 +1,28 @@
 import typing as tp
-from collections import defaultdict
 
 import torch
-from nltk.stem.porter import PorterStemmer
 from nltk.tokenize import wordpunct_tokenize
 from torch.utils.data import Dataset
 
 
 class DocumentDataset(Dataset):
-    def __init__(self, documents: dict, word_idx: dict, max_document_length: int):
+    def __init__(
+            self,
+            documents: dict,
+            word_idx: dict,
+            max_document_length: int,
+            stemmer,
+            add_end_token=False
+            ):
         self.max_document_length = max_document_length
+        self.add_end_token = add_end_token
+        self.document_length = max_document_length + add_end_token
+        self.stemmer = stemmer
+
         self._documents = documents
         self._word_idx = word_idx
-        self._idx_word = dict(zip(self._word_idx.values(), self._word_idx.keys()))
-        self.tokens_count = len(self._word_idx)
 
         self._cache = {}
-
-        self._pad_idx = word_idx['PAD']
 
     def __getitem__(self, index: int) -> tuple:
         if index in self._cache:
@@ -38,17 +43,22 @@ class DocumentDataset(Dataset):
 
     def _encode_text(self, text: str) -> torch.Tensor:
         encoded = []
-        stemmer = PorterStemmer()
         for word in self._tokenize(text):
-            word = stemmer.stem(word)
+            word = self.stemmer(word)
             if word not in self._word_idx:
-                word = 'UNK'
+                word = '<unk>'
             encoded.append(self._word_idx[word])
 
-        return torch.nn.functional.pad(
+        padded = torch.nn.functional.pad(
             torch.tensor(encoded, dtype=torch.long),
-            (self._pad_idx, self.max_document_length - len(encoded))
+            (0, self.max_document_length - len(encoded)),
+            value=self._word_idx['<pad>']
         )
+
+        if self.add_end_token:
+            return torch.concat((padded, torch.tensor([self._word_idx['<end>']])))
+
+        return padded
 
     def _encode_label(self, label: str) -> int:
         if label == 'обеспечение исполнения контракта':
@@ -81,8 +91,11 @@ class LabeledDocumentDataset(DocumentDataset):
         return item
 
     def _encode_position(self, text: str, position: int) -> torch.Tensor:
-        idx = len(self._tokenize(text[:position]))
-        vec = torch.zeros((self.max_document_length,))
-        vec[idx] = 1
+        vec = torch.zeros((self.document_length,))
+        if position == 0 and self.add_end_token:
+            vec[-1] = 1
+        else:
+            idx = len(self._tokenize(text[:position]))
+            vec[idx] = 1
 
         return vec
